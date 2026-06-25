@@ -297,3 +297,5 @@ ok      github.com/hashicorp/vault/vault/external_tests/raft/raft_binary        
 ```
 Secret : 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
 Secret : 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
+
+Secret : api-893c1e09-19dc-449b-9eab-ff60df1e8587
