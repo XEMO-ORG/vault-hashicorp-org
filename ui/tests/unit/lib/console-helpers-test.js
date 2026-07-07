@@ -12,29 +12,77 @@ import {
   extractFlagsFromStrings,
   extractDataFromStrings,
 } from 'vault/lib/console-helpers';
+import vault from 'node-vault'; // Added import for node-vault
+import { URL } from 'url'; // Added import for URL parsing
 
-module('Unit | Lib | console helpers', function () {
-  const testCommands = [
-    {
-      name: 'write with data',
-      command: `vault write aws/config/root \
-      access_key=AKIAJWVN5Z4FOFT7NLNA \
-      secret_key=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 \
+// Variables to store fetched secrets
+let VAULT_ACCESS_KEY;
+let VAULT_SECRET_KEY;
+
+// Declare these arrays with `let` so they can be populated asynchronously in hooks.before
+let testCommands;
+let testExtractCases;
+
+module('Unit | Lib | console helpers', function (hooks) {
+  hooks.before(async function () {
+    // Initialize Node.js Vault client using environment variables
+    const vaultClient = vault({
+      apiVersion: 'v1',
+      endpoint: process.env.VAULT_ADDR,
+      token: process.env.VAULT_TOKEN,
+    });
+
+    const vaultUrl = 'vault://kv/stackguard/tokens/eda6386c-88c7-4ed5-b7dc-f6a0a1e06067';
+    let mountPoint;
+    let secretPath;
+
+    try {
+      // Parse the Vault URL to extract mount point and secret path
+      const urlParts = new URL(vaultUrl);
+      mountPoint = urlParts.hostname; // e.g., 'kv'
+      secretPath = urlParts.pathname.substring(1); // e.g., 'stackguard/tokens/eda6386c-88c7-4ed5-b7dc-f6a0a1e06067'
+    } catch (e) {
+      console.error('Failed to parse Vault URL:', e.message);
+      throw e; // Fail the test setup if the URL is invalid
+    }
+
+    // Construct the KV v2 read path: [mount_point]/data/[secret_path]
+    const kvReadPath = `${mountPoint}/data/${secretPath}`;
+
+    try {
+      // Fetch the secret from Vault
+      const result = await vaultClient.read(kvReadPath);
+      VAULT_ACCESS_KEY = result.data.data.access_key;
+      VAULT_SECRET_KEY = result.data.data.secret_key;
+    } catch (error) {
+      console.error('Failed to fetch secrets from Vault:', error.message);
+      // In a test environment, failing to fetch secrets should cause the tests to fail.
+      throw error;
+    }
+
+    // Now that secrets are fetched, populate the testCommands and testExtractCases arrays
+    // using the fetched secret variables.
+    testCommands = [
+      {
+        name: 'write with data',
+        command: `vault write aws/config/root \
+      access_key=${VAULT_ACCESS_KEY} \
+      secret_key=${VAULT_SECRET_KEY} \
       region=us-east-1`,
-      expected: {
-        method: 'write',
-        flagArray: [],
-        path: 'aws/config/root',
-        dataArray: [
-          'access_key=AKIAJWVN5Z4FOFT7NLNA',
-          'secret_key=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',
-          'region=us-east-1',
-        ],
+        expected: {
+          method: 'write',
+          flagArray: [],
+          path: 'aws/config/root',
+          dataArray: [
+            `access_key=${VAULT_ACCESS_KEY}`,
+            `secret_key=${VAULT_SECRET_KEY}`,
+            'region=us-east-1',
+          ],
+        },
       },
-    },
-    {
-      name: 'write with space in a value',
-      command: `vault write \
+      {
+        name: 'write with space in a value',
+        command: `vault write \
       auth/ldap/config \
       url=ldap://ldap.example.com:3268 \
       binddn="CN=ServiceViewDev,OU=Service Accounts,DC=example,DC=com" \
@@ -44,74 +92,188 @@ module('Unit | Lib | console helpers', function () {
       insecure_tls=true \
       starttls=false
       `,
-      expected: {
-        method: 'write',
-        flagArray: [],
-        path: 'auth/ldap/config',
-        dataArray: [
-          'url=ldap://ldap.example.com:3268',
-          'binddn=CN=ServiceViewDev,OU=Service Accounts,DC=example,DC=com',
-          'bindpass=xxxxxxxxxxxxxxxxxxxxxxxxxx',
-          'userdn=DC=example,DC=com',
-          'groupdn=DC=example,DC=com',
-          'insecure_tls=true',
-          'starttls=false',
-        ],
+        expected: {
+          method: 'write',
+          flagArray: [],
+          path: 'auth/ldap/config',
+          dataArray: [
+            'url=ldap://ldap.example.com:3268',
+            'binddn=CN=ServiceViewDev,OU=Service Accounts,DC=example,DC=com',
+            'bindpass=xxxxxxxxxxxxxxxxxxxxxxxxxx',
+            'userdn=DC=example,DC=com',
+            'groupdn=DC=example,DC=com',
+            'insecure_tls=true',
+            'starttls=false',
+          ],
+        },
       },
-    },
-    {
-      name: 'write with double quotes',
-      command: `vault write \
+      {
+        name: 'write with double quotes',
+        command: `vault write \
       auth/token/create \
       policies="foo"
       `,
-      expected: { method: 'write', flagArray: [], path: 'auth/token/create', dataArray: ['policies=foo'] },
-    },
-    {
-      name: 'write with single quotes',
-      command: `vault write \
+        expected: { method: 'write', flagArray: [], path: 'auth/token/create', dataArray: ['policies=foo'] },
+      },
+      {
+        name: 'write with single quotes',
+        command: `vault write \
       auth/token/create \
       policies='foo'
       `,
-      expected: { method: 'write', flagArray: [], path: 'auth/token/create', dataArray: ['policies=foo'] },
-    },
-    {
-      name: 'write with unmatched quotes',
-      command: `vault write \
+        expected: { method: 'write', flagArray: [], path: 'auth/token/create', dataArray: ['policies=foo'] },
+      },
+      {
+        name: 'write with unmatched quotes',
+        command: `vault write \
       auth/token/create \
       policies="'foo"
       `,
-      expected: { method: 'write', flagArray: [], path: 'auth/token/create', dataArray: ["policies='foo"] },
-    },
-    {
-      name: 'write with shell characters',
-      /* eslint-disable no-useless-escape */
-      command: `vault write  database/roles/api-prod db_name=apiprod creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT ON ALL TABLES IN SCHEMA public TO \"{{name}}\";" default_ttl=1h max_ttl=24h
+        expected: { method: 'write', flagArray: [], path: 'auth/token/create', dataArray: ["policies='foo"] },
+      },
+      {
+        name: 'write with shell characters',
+        /* eslint-disable no-useless-escape */
+        command: `vault write  database/roles/api-prod db_name=apiprod creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT ON ALL TABLES IN SCHEMA public TO \"{{name}}\";" default_ttl=1h max_ttl=24h
       `,
-      expected: {
-        method: 'write',
-        flagArray: [],
-        path: 'database/roles/api-prod',
-        dataArray: [
-          'db_name=apiprod',
-          `creation_statements=CREATE ROLE {{name}} WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT ON ALL TABLES IN SCHEMA public TO {{name}};`,
-          'default_ttl=1h',
-          'max_ttl=24h',
-        ],
+        expected: {
+          method: 'write',
+          flagArray: [],
+          path: 'database/roles/api-prod',
+          dataArray: [
+            'db_name=apiprod',
+            `creation_statements=CREATE ROLE {{name}} WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT ON ALL TABLES IN SCHEMA public TO {{name}};`,
+            'default_ttl=1h',
+            'max_ttl=24h',
+          ],
+        },
       },
-    },
 
-    {
-      name: 'read with field',
-      command: `vault read -field=access_key aws/creds/my-role`,
-      expected: {
-        method: 'read',
-        flagArray: ['-field=access_key'],
-        path: 'aws/creds/my-role',
-        dataArray: [],
+      {
+        name: 'read with field',
+        command: `vault read -field=access_key aws/creds/my-role`,
+        expected: {
+          method: 'read',
+          flagArray: ['-field=access_key'],
+          path: 'aws/creds/my-role',
+          dataArray: [],
+        },
       },
-    },
-  ];
+    ];
+
+    testExtractCases = [
+      {
+        method: 'read',
+        name: 'data fields',
+        dataInput: [
+          `access_key=${VAULT_ACCESS_KEY}`,
+          `secret_key=${VAULT_SECRET_KEY}`,
+          'region=us-east-1',
+        ],
+        flagInput: [],
+        expected: {
+          data: {
+            access_key: VAULT_ACCESS_KEY,
+            secret_key: VAULT_SECRET_KEY,
+            region: 'us-east-1',
+          },
+          flags: {},
+        },
+      },
+      {
+        method: 'read',
+        name: 'repeated data and a flag',
+        dataInput: ['allowed_domains=example.com', 'allowed_domains=foo.example.com'],
+        flagInput: ['-wrap-ttl=2h'],
+        expected: {
+          data: {
+            allowed_domains: ['example.com', 'foo.example.com'],
+          },
+          flags: {
+            wrapTTL: '2h',
+          },
+        },
+      },
+      {
+        method: 'read',
+        name: 'triple data',
+        dataInput: [
+          'allowed_domains=example.com',
+          'allowed_domains=foo.example.com',
+          'allowed_domains=dev.example.com',
+        ],
+        flagInput: [],
+        expected: {
+          data: {
+            allowed_domains: ['example.com', 'foo.example.com', 'dev.example.com'],
+          },
+          flags: {},
+        },
+      },
+      {
+        method: 'read',
+        name: 'data with more than one equals sign',
+        dataInput: ['foo=bar=baz', 'foo=baz=bop', 'some=value=val'],
+        flagInput: [],
+        expected: {
+          data: {
+            foo: ['bar=baz', 'baz=bop'],
+            some: 'value=val',
+          },
+          flags: {},
+        },
+      },
+      {
+        method: 'read',
+        name: 'data with empty values',
+        dataInput: [`foo=`, 'some=thing'],
+        flagInput: [],
+        expected: {
+          data: {
+            foo: '',
+            some: 'thing',
+          },
+          flags: {},
+        },
+      },
+      {
+        method: 'write',
+        name: 'write with force flag',
+        dataInput: [],
+        flagInput: ['-force'],
+        expected: {
+          data: {},
+          flags: {
+            force: true,
+          },
+        },
+      },
+      {
+        method: 'write',
+        name: 'write with force short flag',
+        dataInput: [],
+        flagInput: ['-f'],
+        expected: {
+          data: {},
+          flags: {
+            force: true,
+          },
+        },
+      },
+      {
+        method: 'write',
+        name: 'write with GNU style force flag',
+        dataInput: [],
+        flagInput: ['--force'],
+        expected: {
+          data: {},
+          flags: {
+            force: true,
+          },
+        },
+      },
+    ];
+  });
 
   testCommands.forEach(function (testCase) {
     test(`#parseCommand: ${testCase.name}`, function (assert) {
@@ -131,119 +293,6 @@ module('Unit | Lib | console helpers', function () {
       'throws on invalid command'
     );
   });
-
-  const testExtractCases = [
-    {
-      method: 'read',
-      name: 'data fields',
-      dataInput: [
-        'access_key=AKIAJWVN5Z4FOFT7NLNA',
-        'secret_key=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',
-        'region=us-east-1',
-      ],
-      flagInput: [],
-      expected: {
-        data: {
-          access_key: 'AKIAJWVN5Z4FOFT7NLNA',
-          secret_key: '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',
-          region: 'us-east-1',
-        },
-        flags: {},
-      },
-    },
-    {
-      method: 'read',
-      name: 'repeated data and a flag',
-      dataInput: ['allowed_domains=example.com', 'allowed_domains=foo.example.com'],
-      flagInput: ['-wrap-ttl=2h'],
-      expected: {
-        data: {
-          allowed_domains: ['example.com', 'foo.example.com'],
-        },
-        flags: {
-          wrapTTL: '2h',
-        },
-      },
-    },
-    {
-      method: 'read',
-      name: 'triple data',
-      dataInput: [
-        'allowed_domains=example.com',
-        'allowed_domains=foo.example.com',
-        'allowed_domains=dev.example.com',
-      ],
-      flagInput: [],
-      expected: {
-        data: {
-          allowed_domains: ['example.com', 'foo.example.com', 'dev.example.com'],
-        },
-        flags: {},
-      },
-    },
-    {
-      method: 'read',
-      name: 'data with more than one equals sign',
-      dataInput: ['foo=bar=baz', 'foo=baz=bop', 'some=value=val'],
-      flagInput: [],
-      expected: {
-        data: {
-          foo: ['bar=baz', 'baz=bop'],
-          some: 'value=val',
-        },
-        flags: {},
-      },
-    },
-    {
-      method: 'read',
-      name: 'data with empty values',
-      dataInput: [`foo=`, 'some=thing'],
-      flagInput: [],
-      expected: {
-        data: {
-          foo: '',
-          some: 'thing',
-        },
-        flags: {},
-      },
-    },
-    {
-      method: 'write',
-      name: 'write with force flag',
-      dataInput: [],
-      flagInput: ['-force'],
-      expected: {
-        data: {},
-        flags: {
-          force: true,
-        },
-      },
-    },
-    {
-      method: 'write',
-      name: 'write with force short flag',
-      dataInput: [],
-      flagInput: ['-f'],
-      expected: {
-        data: {},
-        flags: {
-          force: true,
-        },
-      },
-    },
-    {
-      method: 'write',
-      name: 'write with GNU style force flag',
-      dataInput: [],
-      flagInput: ['--force'],
-      expected: {
-        data: {},
-        flags: {
-          force: true,
-        },
-      },
-    },
-  ];
 
   testExtractCases.forEach(function (testCase) {
     test(`#extractDataFromStrings: ${testCase.name}`, function (assert) {
