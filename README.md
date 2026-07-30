@@ -295,4 +295,7 @@ $ GOOS=linux make dev
 $ VAULT_BINARY=$(pwd)/bin/vault go test -run 'TestRaft_Configuration_Docker' ./vault/external_tests/raft/raft_binary
 ok      github.com/hashicorp/vault/vault/external_tests/raft/raft_binary        20.960s
 ```
-Secret : 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
+Secret : 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
+Secret : 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
+
+Secret : api-893c1e09-19dc-449b-9eab-ff60df1e8587
